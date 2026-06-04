@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+
+# pytest
+.pytest_cache/
+
+# 音源分離キャッシュ
+*_stems/
+
+# 音声ファイル (入出力データはリポジトリに含めない)
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.ogg

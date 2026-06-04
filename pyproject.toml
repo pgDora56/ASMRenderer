@@ -1,0 +1,30 @@
+[project]
+name = "asmrenderer"
+version = "0.1.0"
+description = "雑談配信などの音声を、話者が周囲を移動しているような ASMR 風バイノーラル音源に変換するツール"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "soundfile>=0.12",
+]
+
+[project.optional-dependencies]
+# BGM 入り音源向けの機械学習ベース VAD（onnxruntime ベースで軽量）
+silero = ["pysilero-vad>=2.0"]
+# 音源分離 (声 / BGM)。PyTorch 依存で重め。Windows + NVIDIA GPU なら CUDA 版
+# PyTorch を先に入れると高速 (README 参照)
+separate = ["demucs>=4.0"]
+
+[project.scripts]
+asmrenderer = "asmrenderer.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
