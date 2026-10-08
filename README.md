@@ -45,6 +45,22 @@ uv pip install -e '.[silero]'
 uv run asmrenderer run input.wav -o output.wav --vad silero
 ```
 
+### YouTube の URL から直接変換
+
+yt-dlp と ffmpeg が PATH にあれば、URL を渡すだけで取得 → 変換まで一気に実行できる:
+
+```sh
+# 取得した音声と出力は ~/Music/ASMRenderer/ に置かれる (--work-dir で変更可)
+uv run asmrenderer yt "https://www.youtube.com/watch?v=XXXX" --separate
+
+# 長尺配信は wav にすると 1GB 超になり全編をメモリに読むので、まず範囲を切って試す
+uv run asmrenderer yt "https://www.youtube.com/watch?v=XXXX" --start 600 --duration 600 --separate --seed 7
+```
+
+ダウンロードと wav 変換はキャッシュされるので、同じ URL・同じ範囲ならシードを変えて何度でもすぐ引き直せる。
+`--start` / `--duration` は wav の切り出しに使われ、出力は切り出した範囲の全編になる
+(`run` の部分レンダリングとは違い、プランも切り出し範囲に対して作られる)。
+
 ### 移動計画の手動調整
 
 `run` は移動計画を `<出力名>.plan.json` に保存する。気に入らない移動だけ JSON を直接編集して、再レンダリングできる:
@@ -110,7 +126,7 @@ uv run asmrenderer render input.wav plan.json -o output.wav
 
 - [x] 音源分離 (声だけ移動、BGM は静止) — `--separate`
 - [ ] HRTF (SOFA ファイル) 畳み込みレンダラー。前後の定位が改善するはず
-- [ ] yt-dlp 連携 (URL を渡すと音声取得から一気に変換)
+- [x] yt-dlp 連携 (URL を渡すと音声取得から一気に変換) — `yt`
 - [ ] 移動パターンのプリセット (落ち着きめ / 動き多め など)
 - [ ] プランのビジュアライズ (移動軌跡を上から見た図で確認)
 - [ ] 足音・衣擦れなどの環境音の合成

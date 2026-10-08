@@ -6,6 +6,7 @@
 - plan:     解析結果 JSON から移動計画 JSON を生成
 - render:   音声 + 計画 JSON からレンダリング (プランを手で微調整した後の再実行用)
 - separate: 音源分離 (声 / BGM) だけ実行してキャッシュを作る
+- yt:       YouTube の URL から音声を取得して run を実行 (要 yt-dlp, ffmpeg)
 
 プランは JSON の中間成果物として残すので、シードを変えて引き直したり、
 特定の移動だけ手で書き換えて render し直すワークフローを想定している。
@@ -29,6 +30,9 @@ from .renderer import RendererParams, render
 from .separation import separate_vocals
 from .trajectory import Trajectory
 from .vad import SpeechAnalysis, detect_speech
+from .youtube import fetch_audio
+
+DEFAULT_WORK_DIR = Path.home() / "Music" / "ASMRenderer"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -70,6 +74,26 @@ def main(argv: list[str] | None = None) -> int:
     p_sep.add_argument("input")
     p_sep.add_argument("--force-separate", action="store_true", help="キャッシュを無視して分離し直す")
 
+    p_yt = sub.add_parser("yt", help="YouTube の URL から音声を取得して run を実行")
+    p_yt.add_argument("url", help="YouTube の動画 URL")
+    p_yt.add_argument(
+        "-o", "--output",
+        help=f"出力ファイル (デフォルト: <作業ディレクトリ>/<動画ID>[_範囲]_asmr.wav)",
+    )
+    p_yt.add_argument(
+        "--work-dir", default=str(DEFAULT_WORK_DIR),
+        help=f"ダウンロード・変換結果の置き場所 (デフォルト: {DEFAULT_WORK_DIR})",
+    )
+    p_yt.add_argument("--seed", type=int, default=0, help="移動計画の乱数シード")
+    p_yt.add_argument("--vad", choices=["energy", "silero"], default="energy")
+    p_yt.add_argument("--plan-out", help="生成した移動計画 JSON の保存先")
+    _add_separate_args(p_yt)
+    p_yt.add_argument(
+        "--start", type=float, default=0.0,
+        help="動画のこの位置 [秒] から切り出して変換する (長尺配信のメモリ節約・プレビュー用)",
+    )
+    p_yt.add_argument("--duration", type=float, help="切り出す長さ [秒] (省略時は最後まで)")
+
     args = parser.parse_args(argv)
     return {
         "run": _cmd_run,
@@ -77,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
         "plan": _cmd_plan,
         "render": _cmd_render,
         "separate": _cmd_separate,
+        "yt": _cmd_yt,
     }[args.command](args)
 
 
@@ -172,6 +197,30 @@ def _cmd_render(args: argparse.Namespace) -> int:
         audio, sr, plan, Path(args.output), args.start, args.duration, bgm, args.bgm_gain_db
     )
     return 0
+
+
+def _cmd_yt(args: argparse.Namespace) -> int:
+    """URL → ダウンロード → wav 化 (必要なら切り出し) → run と同じ処理。"""
+    try:
+        fetched = fetch_audio(args.url, args.work_dir, start=args.start, duration=args.duration)
+    except RuntimeError as e:
+        raise SystemExit(str(e))
+    _log(f"タイトル: {fetched.title}")
+    # 切り出しは wav の段階で済んでいるので、run には全編として渡す
+    out_path = args.output or str(fetched.wav_path.with_name(f"{fetched.wav_path.stem}_asmr.wav"))
+    run_args = argparse.Namespace(
+        input=str(fetched.wav_path),
+        output=out_path,
+        seed=args.seed,
+        vad=args.vad,
+        plan_out=args.plan_out,
+        separate=args.separate,
+        bgm_gain_db=args.bgm_gain_db,
+        force_separate=args.force_separate,
+        start=0.0,
+        duration=None,
+    )
+    return _cmd_run(run_args)
 
 
 def _cmd_separate(args: argparse.Namespace) -> int:
