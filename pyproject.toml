@@ -14,7 +14,9 @@ dependencies = [
 silero = ["pysilero-vad>=2.0"]
 # 音源分離 (声 / BGM)。PyTorch 依存で重め。Windows + NVIDIA GPU なら CUDA 版
 # PyTorch を先に入れると高速 (README 参照)
-separate = ["demucs>=4.0"]
+# torchaudio 2.9 以降は wav 保存に torchcodec (要 ffmpeg 共有 DLL) が必須になり
+# demucs の出力保存が落ちるため、soundfile バックエンドが残る 2.8 系に固定する
+separate = ["demucs>=4.0", "torch<2.9", "torchaudio<2.9"]
 
 [project.scripts]
 asmrenderer = "asmrenderer.cli:main"

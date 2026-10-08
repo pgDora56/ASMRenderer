@@ -32,8 +32,10 @@ class PlannerParams:
     seed: int = 0
 
     # --- 位置移動 (ポーズトリガー) ---
-    dwell_min_s: float = 25.0  # 同じ位置に留まる最短時間
-    dwell_max_s: float = 110.0  # 同上の最長時間 (この範囲から一様サンプル)
+    # 実 ASMR 録音 (10h 解析) では滞留の中央値 9s / p90 38s、移動 3.5 回/分だった。
+    # 雑談配信を変換する用途では落ち着きも欲しいので、その半分程度に寄せている
+    dwell_min_s: float = 12.0  # 同じ位置に留まる最短時間
+    dwell_max_s: float = 60.0  # 同上の最長時間 (この範囲から一様サンプル)
     p_move_at_pause: float = 0.6  # dwell 経過後、ポーズで実際に移動する確率
     min_pause_s: float = 0.5  # 移動トリガーとみなす最小ポーズ長
 
@@ -41,22 +43,38 @@ class PlannerParams:
     az_step_min_deg: float = 35.0
     az_step_max_deg: float = 150.0
     p_lean: float = 0.25  # 角度はほぼ変えず距離だけ変える「離れる/近づく」移動の割合
+    # 片側 (|az| >= cross_from_deg) にいるとき、正面を通って反対側へ渡る確率。
+    # 「右で喋って、次は左」という左右交互の大きな移動を作る。渡り先は反対側の
+    # cross_to_min_deg〜cross_to_max_deg (背後には行かない)
+    p_cross_side: float = 0.6
+    cross_from_deg: float = 25.0
+    cross_to_min_deg: float = 40.0
+    cross_to_max_deg: float = 110.0
+    # 着地点がこれより背後 (|az| > max_behind_deg) になる移動は向きを反転する。
+    # 真後ろは左右差がほぼ無く「声が消える」ように聞こえるため
+    max_behind_deg: float = 135.0
     walk_speed_deg_s: float = 60.0  # 移動アニメーションの角速度の目安
 
     # --- 喋りながら移動 ---
-    walk_talk_rate_per_min: float = 0.25  # 期待回数 / 分 (≒4 分に 1 回)
-    walk_talk_min_speech_s: float = 12.0  # この長さ以上の発話区間にだけ入れる
+    # 実録音では移動の大半が喋りながら起きていたので、ポーズ移動と同程度に入れる
+    walk_talk_rate_per_min: float = 1.0  # 期待回数 / 分
+    walk_talk_min_speech_s: float = 8.0  # この長さ以上の「喋っている塊」にだけ入れる
+    # 雑談は息継ぎで発話区間が 1〜4 秒に刻まれるので、この長さ未満のギャップは
+    # 結合して「喋っている塊」として扱う (walk_talk / よそ見の挿入先)
+    talk_region_merge_gap_s: float = 2.0
     walk_talk_dur_min_s: float = 5.0
     walk_talk_dur_max_s: float = 12.0
 
     # --- よそ見 ---
-    face_away_rate_per_min: float = 0.12  # ≒8 分に 1 回。頻発すると落ち着きがなくなる
+    face_away_rate_per_min: float = 0.2  # ≒5 分に 1 回。頻発すると落ち着きがなくなる
     face_away_hold_min_s: float = 2.0
     face_away_hold_max_s: float = 6.0
 
     # --- 揺らぎ (トラジェクトリ側で付与する微小な体の揺れ) ---
-    sway_az_deg: float = 2.5
-    sway_dist_m: float = 0.03
+    # 実録音では滞留中も方位角が標準偏差 20° 超で揺れていた (推定ノイズ込み)。
+    # 完全静止は不自然なので、その 1/3 程度を常時重ねる
+    sway_az_deg: float = 8.0
+    sway_dist_m: float = 0.06
 
 
 @dataclass
@@ -163,7 +181,7 @@ def plan_movement(analysis: SpeechAnalysis, params: PlannerParams | None = None)
     # 4. 初期位置を決め、候補に実際の方位角を順次割り当てる
     init_az = float(rng.uniform(-40, 40))
     init_dist = float(rng.uniform(0.6, 1.2))
-    events = _assign_positions(accepted, init_az, init_dist, rng)
+    events = _assign_positions(accepted, init_az, init_dist, rng, params)
 
     # 5. よそ見イベントを、位置移動と重ならない発話中の時間帯に挿入
     events += _gen_face_events(analysis, events, params, rng, duration)
@@ -223,9 +241,9 @@ def _gen_pause_candidates(
 def _gen_walk_talk_candidates(
     analysis: SpeechAnalysis, params: PlannerParams, rng: np.random.Generator
 ) -> list[_Candidate]:
-    """喋りながらゆっくり移動する候補を、長い発話区間の中に生成する。"""
+    """喋りながらゆっくり移動する候補を、長い「喋っている塊」の中に生成する。"""
     candidates = []
-    for ss, se in analysis.segments:
+    for ss, se in _talk_regions(analysis, params.talk_region_merge_gap_s):
         seg_len = se - ss
         if seg_len < params.walk_talk_min_speech_s:
             continue
@@ -244,6 +262,17 @@ def _gen_walk_talk_candidates(
     return candidates
 
 
+def _talk_regions(analysis: SpeechAnalysis, merge_gap_s: float) -> list[tuple[float, float]]:
+    """短いギャップを結合した「喋っている塊」の区間列を返す。"""
+    regions: list[tuple[float, float]] = []
+    for s, e in analysis.segments:
+        if regions and s - regions[-1][1] < merge_gap_s:
+            regions[-1] = (regions[-1][0], e)
+        else:
+            regions.append((s, e))
+    return regions
+
+
 def _sample_distance(rng: np.random.Generator) -> float:
     """新しい距離 [m] をサンプルする。ASMR なので近距離を厚めに。"""
     r = rng.random()
@@ -259,18 +288,35 @@ def _assign_positions(
     init_az: float,
     init_dist: float,
     rng: np.random.Generator,
+    params: PlannerParams | None = None,
 ) -> list[MoveEvent]:
     """候補に方位角の符号 (回る向き) を決めて、連続した位置遷移に変換する。"""
+    params = params or PlannerParams()
     events = []
     az, dist = init_az, init_dist
     for c in candidates:
-        # 背後に長く留まらないよう、現在背後寄りなら正面方向へのバイアスをかける
         wrapped = ((az + 180) % 360) - 180
-        if abs(wrapped) > 90 and rng.random() < 0.65:
-            direction = -np.sign(wrapped) or 1.0
+        is_lean = c.az_step < params.az_step_min_deg
+        if (
+            not is_lean
+            and abs(wrapped) >= params.cross_from_deg
+            and rng.random() < params.p_cross_side
+        ):
+            # 反対側へ渡る: 正面 (0°) を通る向きに、反対側の目標角まで動く
+            target = -np.sign(wrapped) * rng.uniform(
+                params.cross_to_min_deg, params.cross_to_max_deg
+            )
+            new_az = az + (target - wrapped)
         else:
-            direction = rng.choice([-1.0, 1.0])
-        new_az = az + direction * c.az_step
+            # 背後に長く留まらないよう、現在背後寄りなら正面方向へのバイアスをかける
+            if abs(wrapped) > 90 and rng.random() < 0.65:
+                direction = -np.sign(wrapped) or 1.0
+            else:
+                direction = rng.choice([-1.0, 1.0])
+            new_az = az + direction * c.az_step
+            landing = ((new_az + 180) % 360) - 180
+            if abs(landing) > params.max_behind_deg:
+                new_az = az - direction * c.az_step
         events.append(
             MoveEvent(
                 kind=c.kind,
@@ -303,7 +349,7 @@ def _gen_face_events(
     pos_spans = [(e.t0 - 2.0, e.t1 + 2.0) for e in position_events]  # 前後 2 秒のマージン
     last_face_end = -1e9
 
-    for ss, se in analysis.segments:
+    for ss, se in _talk_regions(analysis, params.talk_region_merge_gap_s):
         seg_len = se - ss
         if seg_len < 6.0:
             continue

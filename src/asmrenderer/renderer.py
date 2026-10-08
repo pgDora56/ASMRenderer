@@ -32,6 +32,14 @@ class RendererParams:
     ref_dist_m: float = 1.0  # このゲイン基準距離で 1 倍
     near_clip_m: float = 0.25  # これ以上近づいてもゲインを増やさない (爆音防止)
 
+    # 広帯域 ILD: 真横 (|sin az| = 1) で近い耳と遠い耳の差が lateral_ild_db になる。
+    # 耳間距離だけの 1/r 差 (~2dB) では実録音 (中央値 6dB、真横近距離で 13dB 超) に
+    # 遠く及ばず移動が小さく聞こえるため、明示的に付与する。近距離ほど増える。
+    lateral_ild_db: float = 10.0
+    ild_near_boost: float = 0.5  # dist <= ild_near_dist で ILD が (1 + boost) 倍
+    ild_near_dist: float = 0.4
+    ild_far_dist: float = 1.0  # これ以遠では boost なし
+
     # 頭部シャドウ: 反対側の耳の高域減衰の深さ (0-1) と帯域
     shadow_depth: float = 0.55
     shadow_f0: float = 700.0
@@ -144,10 +152,18 @@ def render(
         src0 = max(0, rs - margin)
         src_idx = np.arange(src0, min(n, re), dtype=np.float64)
         src = audio[int(src0) : min(n, re)]
+        # 広帯域 ILD (per-sample なので移動中も滑らか)。近距離ほど大きい
+        near = np.clip(
+            (params.ild_far_dist - dist) / (params.ild_far_dist - params.ild_near_dist), 0.0, 1.0
+        )
+        ild_db = params.lateral_ild_db * (1.0 + params.ild_near_boost * near)
+        sin_t = np.sin(theta)
         ears = []
-        for r_ear in (r_l, r_r):
+        for r_ear, s_near in ((r_l, -sin_t), (r_r, sin_t)):
             delay = r_ear / SPEED_OF_SOUND * sr  # [サンプル]
             gain = params.ref_dist_m / np.maximum(r_ear, params.near_clip_m)
+            # 音源側の耳は +ild/2、反対側は -ild/2 (s_near は音源側で正)
+            gain = gain * 10 ** (ild_db * s_near / 40.0)
             # 入力を「遅延分だけ過去」の位置から線形補間で読む = 可変フラクショナル遅延
             ear = np.interp(idx - delay, src_idx, src, left=0.0, right=0.0) * gain
             ears.append(ear)
